@@ -68,9 +68,9 @@ function measure(value: unknown) {
 
 describe("native instruction payload measurement", () => {
   for (const provider of providers) for (const schema of ["v4", "v5"] as const) {
-    it(`captures ${provider.kind} ${schema} instructions and tools on start and resume`, async () => {
+    it(`captures ${provider.kind} ${schema} instructions and tools on start, resume and continuation`, async () => {
       const input = execution(provider, schema);
-      const fresh = transport(provider), resumed = transport(provider);
+      const fresh = transport(provider), resumed = transport(provider), continued = transport(provider);
       const backend = createRunnerdNativeSessionBackend(input, {
         transportFactory: () => fresh, dynamicTools: tools,
         environment: { PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
@@ -92,7 +92,20 @@ describe("native instruction payload measurement", () => {
       await recovery.session!.startTurn({ message: { role: "user", text: JSON.stringify(envelope) } });
       await recovery.session!.close({ reason: "measurement" });
 
-      for (const [phase, captured, method] of [["start", fresh, "thread/start"], ["resume", resumed, "thread/resume"]] as const) {
+      continued.readResponse = resumed.readResponse;
+      const continuationInput = parseNativeExecutionInput({ ...input, continuationPrompt: "User update: retain the existing document and finish." });
+      const continuationBackend = createRunnerdNativeSessionBackend(continuationInput, {
+        transportFactory: () => continued, dynamicTools: tools,
+        environment: { PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+      });
+      const continuationRecovery = await continuationBackend.recoverSession!(checkpoint, { signal: new AbortController().signal });
+      expect(continuationRecovery.recovered).toBe(true);
+      const continuationEnvelope = buildNativeModelEnvelope(continuationInput, { resumedSession: true });
+      expect(continuationEnvelope.schema).toBe("paperclip.native-continuation.v1");
+      await continuationRecovery.session!.startTurn({ message: { role: "user", text: JSON.stringify(continuationEnvelope) } });
+      await continuationRecovery.session!.close({ reason: "measurement" });
+
+      for (const [phase, captured, method] of [["start", fresh, "thread/start"], ["resume", resumed, "thread/resume"], ["continuation", continued, "thread/resume"]] as const) {
         const setup = captured.calls.find(call => call.method === method)!.params;
         const turn = captured.calls.find(call => call.method === "turn/start")!.params;
         const instructions = setup.developerInstructions ?? setup.baseInstructions;
@@ -106,10 +119,25 @@ describe("native instruction payload measurement", () => {
           expect.objectContaining({ description: PRP_BLOCK_TOOL_DESCRIPTION }),
         ]);
         expect(deliveredTools).toHaveLength(tools.length + 2);
-        expect(JSON.stringify(turn.input)).toContain("Obtain one accepted result");
-        expect(JSON.stringify(turn.input)).toContain("Document saved");
-        expect(JSON.stringify(turn.input)).toContain("write_document");
-        expect(JSON.stringify(turn.input)).toContain("register_deliverable");
+        if (phase === "continuation") {
+          expect(JSON.stringify(turn.input)).toContain("User update: retain the existing document and finish.");
+          const delivered = JSON.parse((turn.input as Array<{ text: string }>)[0]!.text);
+          expect(schema === "v4" ? JSON.parse(delivered.message) : delivered).toEqual(continuationEnvelope);
+          if (schema === "v5") {
+            expect(JSON.stringify(turn.input)).not.toContain("constraints");
+            expect(JSON.stringify(turn.input)).not.toContain("Document saved");
+          } else {
+            // v4's task-mode driver still wraps the compact message in its task envelope.
+            expect(JSON.stringify(turn.input)).toContain("Obtain one accepted result");
+            expect(JSON.stringify(turn.input)).toContain("Document saved");
+          }
+          expect(JSON.stringify(turn.input)).toContain("objective");
+        } else {
+          expect(JSON.stringify(turn.input)).toContain("Obtain one accepted result");
+          expect(JSON.stringify(turn.input)).toContain("Document saved");
+          expect(JSON.stringify(turn.input)).toContain("write_document");
+          expect(JSON.stringify(turn.input)).toContain("register_deliverable");
+        }
         expect(setup.approvalPolicy).toBe("never");
         receipts.push({ provider: provider.kind, schema, phase,
           instructions: measure(instructions), tools: measure(setup.dynamicTools), input: measure(turn.input),
@@ -128,7 +156,7 @@ describe("native instruction payload measurement", () => {
 afterAll(() => {
   const output = process.env.PAPERCLIP_NATIVE_INSTRUCTION_REPORT;
   if (!output) return;
-  if (receipts.length !== 12) throw new Error("Incomplete native instruction measurement; refusing a partial receipt");
+  if (receipts.length !== 18) throw new Error("Incomplete native instruction measurement; refusing a partial receipt");
   const sourcePaths = ["runtime-context.ts", "codex-native-backend.ts", "opencode-native-backend.ts"];
   writeFileSync(output, `${JSON.stringify({
     schema: "paperclip.native-instruction-measurement.v1",

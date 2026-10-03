@@ -54,7 +54,7 @@ describe("native instruction comparison admission", () => {
       schema: "paperclip.native-instruction-measurement.v1", sourceSha: "frozen", sourceDirty: false, providerCalls: 0,
       fixtureSha256: createHash("sha256").update(readFileSync(new URL("../../packages/paperclip-runner/src/backends/native-instruction-measurement.test.ts", import.meta.url))).digest("hex"),
       sourceHashes: Object.fromEntries(Object.entries(NATIVE_INSTRUCTION_VARIANTS.baseline).map(([file, digest]) => [file.split('/').at(-1)!, digest])),
-      receipts: ['codex', 'acpx', 'opencode'].flatMap(provider => ['v4', 'v5'].flatMap(schema => ['start', 'resume'].map(phase => ({ provider, schema, phase })))),
+      receipts: ['codex', 'acpx', 'opencode'].flatMap(provider => ['v4', 'v5'].flatMap(schema => ['start', 'resume', 'continuation'].map(phase => ({ provider, schema, phase })))),
     };
     const source = { sourceSha: "frozen", variant: "baseline" };
     expect(() => validateNativeInstructionMeasurement(measurement, source)).not.toThrow();

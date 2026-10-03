@@ -88,7 +88,7 @@ export function validateNativeInstructionMeasurement(measurement: {
   sourceHashes: Record<string, string>; receipts: Array<{ provider: string; schema: string; phase: string }>;
 }, source: { sourceSha: string; variant: string }) {
   const expected = ['codex', 'acpx', 'opencode'].flatMap(provider => ['v4', 'v5'].flatMap(schema =>
-    ['start', 'resume'].map(phase => `${provider}/${schema}/${phase}`))).sort();
+    ['start', 'resume', 'continuation'].map(phase => `${provider}/${schema}/${phase}`))).sort();
   const actual = measurement.receipts.map(value => `${value.provider}/${value.schema}/${value.phase}`).sort();
   const files = NATIVE_INSTRUCTION_VARIANTS[source.variant as keyof typeof NATIVE_INSTRUCTION_VARIANTS];
   if (measurement.schema !== "paperclip.native-instruction-measurement.v1"

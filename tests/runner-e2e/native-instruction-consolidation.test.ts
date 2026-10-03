@@ -5,9 +5,32 @@ import { describe, expect, it } from "vitest";
 import { runnerSuites, buildRunnerMatrix } from "./catalog.js";
 import { gradeNativeDefault, NATIVE_MASTER_DEFAULT_SHA256 } from "./native-completion-defaults.js";
 import { nativeCompletionTasks } from "./native-completion-cases.js";
-import { assertNativeInstructionSelection, nativeInstructionVariant, validateNativeInstructionMeasurement, NATIVE_INSTRUCTION_BASE_SHA, NATIVE_INSTRUCTION_DEFAULT_SHA256, NATIVE_INSTRUCTION_SUITE, NATIVE_INSTRUCTION_VARIANTS } from "./native-instruction-consolidation.js";
+import { assertNativeInstructionLineage, assertNativeInstructionSelection, nativeInstructionVariant, validateNativeInstructionMeasurement, NATIVE_INSTRUCTION_BASE_SHA, NATIVE_INSTRUCTION_DEFAULT_SHA256, NATIVE_INSTRUCTION_SUITE, NATIVE_INSTRUCTION_VARIANTS } from "./native-instruction-consolidation.js";
 
 describe("native instruction comparison admission", () => {
+  it("hydrates bounded hosted history and still requires exact HEAD and real base ancestry", () => {
+    const head = "a".repeat(40);
+    for (const scenario of ["valid", "changed-head", "no-base", "local", "not-shallow"]) {
+      let hydrated = false;
+      const calls: string[][] = [];
+      const run = (...args: string[]) => {
+        calls.push(args);
+        if (args[0] === "merge-base") {
+          if (!hydrated || scenario === "no-base") throw new Error("no declared ancestor");
+          return "";
+        }
+        if (args[1] === "--is-shallow-repository") return scenario === "not-shallow" ? "false" : "true";
+        if (args.includes("fetch")) { hydrated = true; return ""; }
+        return scenario === "changed-head" ? "b".repeat(40) : head;
+      };
+      if (scenario === "valid") expect(() => assertNativeInstructionLineage(head, run, true)).not.toThrow();
+      else expect(() => assertNativeInstructionLineage(head, run, scenario !== "local")).toThrow();
+      const fetch = calls.find(args => args.includes("fetch"));
+      if (["local", "not-shallow"].includes(scenario)) expect(fetch).toBeUndefined();
+      else expect(fetch).toEqual(["-c", "credential.helper=", "-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", "--depth=8",
+        "https://github.com/paperclipai/paperclip.git", head]);
+    }
+  });
   it("accepts each complete source variant and rejects a mixed variant", () => {
     const files = Object.keys(NATIVE_INSTRUCTION_VARIANTS.baseline);
     const baseline = new Map(files.map(file => [file, execFileSync("git", ["show", `${NATIVE_INSTRUCTION_BASE_SHA}:${file}`])]));

@@ -10,6 +10,7 @@ import { PRP_BLOCK_TOOL_DESCRIPTION, PRP_COMPLETION_TOOL_DESCRIPTION } from "../
 import { FakeCodexTransport, WORKSPACE } from "../drivers/codex/codex-app-server-driver.test-support.js";
 import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
 import { createRunnerdNativeSessionBackend } from "./codex-native-backend.js";
+import { inspectNativeCompletionSourceMetadata } from "../../../../tests/runner-e2e/native-completion-git-source.mjs";
 
 // This captures Paperclip's real runnerd RPC boundary with a scripted transport.
 // It measures complete Paperclip-supplied instruction/tool/message projections,
@@ -158,10 +159,14 @@ afterAll(() => {
   if (!output) return;
   if (receipts.length !== 18) throw new Error("Incomplete native instruction measurement; refusing a partial receipt");
   const sourcePaths = ["runtime-context.ts", "codex-native-backend.ts", "opencode-native-backend.ts"];
+  const source = inspectNativeCompletionSourceMetadata({ repositoryRoot: new URL("../../../../", import.meta.url).pathname,
+    sourceFiles: sourcePaths.map(file => `packages/paperclip-runner/src/backends/${file}`),
+    baseSha: "2a8a99e4a5f69aa803b3f10b982f583e75a87042", variant: "measurement" });
   writeFileSync(output, `${JSON.stringify({
     schema: "paperclip.native-instruction-measurement.v1",
     sourceSha: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-    sourceDirty: Boolean(execFileSync("git", ["status", "--porcelain", "--untracked-files=normal"], { encoding: "utf8" }).trim()),
+    sourceDirty: !source.immutable,
+    sourceMetadata: source.sourceMetadata,
     sourceHashes: Object.fromEntries(sourcePaths.map(file => [file, sha256(readFileSync(new URL(file, import.meta.url)))])),
     fixtureSha256: sha256(readFileSync(new URL(import.meta.url))),
     boundary: "scripted runnerd RPC; complete Paperclip instructions, fixture core tool schemas and turn input",

@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { MatrixExecution } from "./types.js";
 import { nativeCompletionDefinitionDigest } from "./native-completion-cases.js";
+import { nativeCompletionPreflightEnvironment } from "./native-completion-admission.js";
+import { inspectNativeCompletionSourceMetadata, inspectNativeCompletionRunnerd } from "./native-completion-git-source.mjs";
 
 export const NATIVE_INSTRUCTION_SUITE = "native-instruction-consolidation";
 export const NATIVE_INSTRUCTION_BASE_SHA = "2a8a99e4a5f69aa803b3f10b982f583e75a87042";
@@ -31,6 +33,7 @@ const comparisonFiles = new Set([
   "packages/paperclip-runner/src/backends/native-instruction-measurement.test.ts",
   "tests/runner-e2e/native-instruction-consolidation.ts",
   "tests/runner-e2e/native-instruction-consolidation.test.ts",
+  "tests/runner-e2e/native-completion-git-source.d.mts",
   "tests/runner-e2e/native-completion-defaults.ts",
   "tests/runner-e2e/native-completion-defaults.test.ts",
   "tests/runner-e2e/catalog.ts", "tests/runner-e2e/catalog.test.ts", "tests/runner-e2e/launch.ts",
@@ -38,7 +41,24 @@ const comparisonFiles = new Set([
   "tests/runner-e2e/README.md", "doc/evals.md",
   "doc/plans/2026-10-03-native-completion-consolidation.md",
 ]);
-const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+const git = (...args: string[]) => execFileSync("git", ["--no-replace-objects", ...args], {
+  cwd: root, encoding: "utf8", timeout: 60_000,
+  env: nativeCompletionPreflightEnvironment(process.env),
+}).trim();
+
+export function assertNativeInstructionLineage(sourceSha: string, run = git, hosted = process.env.GITHUB_ACTIONS === "true") {
+  try { run("merge-base", "--is-ancestor", NATIVE_INSTRUCTION_BASE_SHA, sourceSha); }
+  catch (error) {
+    if (!hosted || run("rev-parse", "--is-shallow-repository") !== "true"
+      || !/^[a-f0-9]{40}$/.test(sourceSha)) throw error;
+    // Fetch only this immutable public source, with no provider keys or Git credentials.
+    // The final ancestry/diff gates are identical to the full-history local gates.
+    run("-c", "credential.helper=", "-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", "--depth=8",
+      "https://github.com/paperclipai/paperclip.git", sourceSha);
+    if (run("rev-parse", "HEAD") !== sourceSha) throw new Error("Source changed during ancestry hydration");
+    run("merge-base", "--is-ancestor", NATIVE_INSTRUCTION_BASE_SHA, sourceSha);
+  }
+}
 
 export function nativeInstructionVariant(read = (file: string) => readFileSync(join(root, file))) {
   const matches = Object.entries(NATIVE_INSTRUCTION_VARIANTS).filter(([, files]) =>
@@ -49,6 +69,7 @@ export function nativeInstructionVariant(read = (file: string) => readFileSync(j
 
 export function nativeInstructionDefinitionDigest() {
   return hash(nativeCompletionDefinitionDigest() + hash(readFileSync(new URL(import.meta.url)))
+    + hash(readFileSync(join(root, "tests/runner-e2e/native-completion-git-source.mjs")))
     + hash(readFileSync(join(root, "packages/paperclip-runner/src/backends/native-instruction-measurement.test.ts"))));
 }
 
@@ -75,12 +96,38 @@ function sourceReceipt() {
   const sourceSha = git("rev-parse", "HEAD");
   const requestedSource = process.env.PAPERCLIP_RUNNER_E2E_SOURCE_SHA?.trim();
   if (requestedSource && requestedSource !== sourceSha) throw new Error("Native instruction source differs from requested immutable revision");
-  if (git("status", "--porcelain", "--untracked-files=normal")) throw new Error("Native instruction comparison requires clean committed source");
-  // Do not silently relax shallow history or admit unrelated production edits.
-  git("merge-base", "--is-ancestor", NATIVE_INSTRUCTION_BASE_SHA, sourceSha);
+  assertNativeInstructionLineage(sourceSha);
+  const metadata = inspectNativeCompletionSourceMetadata({ repositoryRoot: root,
+    sourceFiles: [...comparisonFiles], baseSha: NATIVE_INSTRUCTION_BASE_SHA, variant: nativeInstructionVariant() });
+  if (!metadata.immutable || !metadata.layering || metadata.sourceMetadataErrors.length)
+    throw new Error(`Native instruction comparison requires clean committed source: ${metadata.sourceMetadataErrors.join("; ")}`);
   const changed = git("diff", "--name-only", NATIVE_INSTRUCTION_BASE_SHA, sourceSha).split("\n").filter(Boolean);
   if (changed.some(file => !comparisonFiles.has(file))) throw new Error("Native instruction comparison contains unrelated source changes");
-  return { sourceSha, variant: nativeInstructionVariant(), fixtureDigest: nativeInstructionDefinitionDigest() };
+  return { sourceSha, sourceTree: git("rev-parse", "HEAD^{tree}"), variant: nativeInstructionVariant(),
+    fixtureDigest: nativeInstructionDefinitionDigest(), sourceMetadata: metadata.sourceMetadata,
+    sourceMetadataFingerprint: metadata.sourceMetadataFingerprint };
+}
+
+function buildFingerprint() {
+  const digest = createHash("sha256");
+  const visit = (directory: string) => {
+    for (const entry of readdirSync(join(root, directory), { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const file = join(directory, entry.name);
+      if (entry.isDirectory()) visit(file);
+      else if (entry.isFile()) { const bytes = readFileSync(join(root, file)); digest.update(JSON.stringify([file, bytes.length])).update(bytes); }
+      else throw new Error(`Unexpected native build entry: ${file}`);
+    }
+  };
+  visit("packages/paperclip-runner/dist");
+  return digest.digest("hex");
+}
+
+function runnerdProof(source: ReturnType<typeof sourceReceipt>) {
+  const proof = inspectNativeCompletionRunnerd({ repositoryRoot: root, sourceSha: source.sourceSha,
+    sourceFingerprint: hash(JSON.stringify([source.sourceTree, source.fixtureDigest])),
+    environment: nativeCompletionPreflightEnvironment(process.env) });
+  if (!proof.passed) throw new Error(`Native instruction runnerd admission failed: ${proof.errors.join("; ")}`);
+  return proof;
 }
 
 export function validateNativeInstructionMeasurement(measurement: {
@@ -101,16 +148,30 @@ export function validateNativeInstructionMeasurement(measurement: {
 
 export function prepareNativeInstructionPreflight(directory: string) {
   const source = sourceReceipt();
+  const build = (script: string, file: string) => {
+    const log = execFileSync("pnpm", ["--filter", "@paperclipai/paperclip-runner", script], {
+      cwd: root, timeout: 10 * 60_000, env: nativeCompletionPreflightEnvironment(process.env), maxBuffer: 8 * 1024 * 1024,
+    });
+    writeFileSync(join(directory, file), log);
+    return { executed: true, exitCode: 0, file, sha256: hash(log) };
+  };
+  const sdkBuild = build("build:typescript", "native-instruction-sdk-build.txt");
+  const nativeBuild = process.env.GITHUB_ACTIONS === "true"
+    ? { executed: false, reuse: "trusted_same_run_build", calibration: "not_executed" }
+    : build("build:runner-binaries", "native-instruction-runnerd-build.txt");
+  const runnerd = runnerdProof(source), buildSha256 = buildFingerprint();
   const measurementPath = join(directory, "native-instruction-measurement.json");
   execFileSync(process.execPath, [join(root, "node_modules/vitest/vitest.mjs"), "run", "src/backends/native-instruction-measurement.test.ts"], {
     cwd: join(root, "packages/paperclip-runner"), timeout: 60_000,
-    env: { PATH: process.env.PATH, PAPERCLIP_NATIVE_INSTRUCTION_REPORT: measurementPath }, stdio: "inherit",
+    env: { ...nativeCompletionPreflightEnvironment(process.env), PAPERCLIP_NATIVE_INSTRUCTION_REPORT: measurementPath }, stdio: "inherit",
   });
   const measurement = JSON.parse(readFileSync(measurementPath, "utf8"));
   validateNativeInstructionMeasurement(measurement, source);
+  if (JSON.stringify(sourceReceipt()) !== JSON.stringify(source)) throw new Error("Source changed during native instruction admission");
   const output = join(directory, "native-instruction-preflight.json");
   writeFileSync(output, `${JSON.stringify({ schema: "paperclip.native-instruction-preflight.v1", ...source,
-    measurementPath, measurementSha256: hash(readFileSync(measurementPath)) }, null, 2)}\n`);
+    measurementPath, measurementSha256: hash(readFileSync(measurementPath)),
+    sdkBuild, nativeBuild, runnerd, buildSha256, providerCalls: 0, live: "not_run" }, null, 2)}\n`);
   return output;
 }
 
@@ -120,7 +181,15 @@ export function verifyNativeInstructionPreflight(path: string | undefined) {
   const source = sourceReceipt();
   if (receipt.schema !== "paperclip.native-instruction-preflight.v1"
     || receipt.sourceSha !== source.sourceSha || receipt.variant !== source.variant
+    || receipt.sourceTree !== source.sourceTree || receipt.sourceMetadataFingerprint !== source.sourceMetadataFingerprint
     || receipt.fixtureDigest !== source.fixtureDigest
+    || receipt.providerCalls !== 0 || receipt.live !== "not_run" || receipt.sdkBuild?.executed !== true || receipt.sdkBuild?.exitCode !== 0
+    || receipt.sdkBuild.sha256 !== hash(readFileSync(join(receipt.measurementPath, "..", receipt.sdkBuild.file)))
+    || receipt.buildSha256 !== buildFingerprint() || JSON.stringify(receipt.runnerd) !== JSON.stringify(runnerdProof(source))
+    || (process.env.GITHUB_ACTIONS === "true"
+      ? receipt.nativeBuild?.executed !== false || receipt.nativeBuild.reuse !== "trusted_same_run_build" || receipt.nativeBuild.calibration !== "not_executed"
+      : receipt.nativeBuild?.executed !== true || receipt.nativeBuild.exitCode !== 0
+        || receipt.nativeBuild.sha256 !== hash(readFileSync(join(receipt.measurementPath, "..", receipt.nativeBuild.file))))
     || receipt.measurementSha256 !== hash(readFileSync(receipt.measurementPath)))
     throw new Error("Stale or mismatched native instruction source admission");
   validateNativeInstructionMeasurement(JSON.parse(readFileSync(receipt.measurementPath, "utf8")), source);

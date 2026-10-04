@@ -182,14 +182,23 @@ export function RoutineDetail() {
   });
   const activeIssueId = routine?.activeIssue?.id;
 
-  const labelsQuery = useCompanyLabels(selectedCompanyId);
+  // Labels are scoped to the routine's own company, not the selected sidebar
+  // company — a detail URL can carry a different company prefix.
+  const labelsQuery = useCompanyLabels(routine?.companyId);
   const setRoutineLabelIds = useMutation({
     mutationFn: (labelIds: string[]) => routinesApi.setLabelIds(routineId!, labelIds),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) });
-      if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId) });
+      if (routine?.companyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(routine.companyId) });
       }
+    },
+    onError: () => {
+      pushToast({
+        title: "Could not save tags",
+        body: "The tag update was rejected. The routine's tags were left unchanged — try again.",
+        tone: "warn",
+      });
     },
   });
   const { data: liveRuns } = useQuery({
@@ -845,7 +854,7 @@ export function RoutineDetail() {
             <div className="flex shrink-0 items-center gap-1.5">
               <TagChips labels={routine.labels} max={3} />
               <TagPickerPopover
-                companyId={selectedCompanyId}
+                companyId={routine.companyId}
                 labels={labelsQuery.data}
                 selectedIds={routine.labelIds ?? []}
                 saving={setRoutineLabelIds.isPending}
@@ -853,7 +862,7 @@ export function RoutineDetail() {
                 trigger={
                   <button
                     type="button"
-                    className="inline-flex h-5 items-center gap-1 rounded-sm border border-dashed border-border px-1.5 text-[11px] text-muted-foreground hover:bg-accent/50"
+                    className="inline-flex h-5 items-center gap-1 rounded-sm border border-dashed border-border px-1.5 text-(length:--text-micro) text-muted-foreground hover:bg-accent/50"
                     title="Edit tags"
                   >
                     <Tag className="h-3 w-3" />

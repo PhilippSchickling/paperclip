@@ -4306,8 +4306,13 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
+    await assertCanUpdateAgent(req, existing);
     await svc.setAgentLabels(existing.companyId, id, req.body.labelIds);
     const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: existing.companyId,
@@ -4319,7 +4324,15 @@ export function agentRoutes(
       entityId: id,
       details: { labelIds: [...req.body.labelIds].sort() },
     });
-    res.json(agent);
+    // Mirror GET /agents/:id: callers without configuration-read permission get
+    // the restricted view so this route cannot leak peer agent configuration.
+    const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
+    const canReadSensitiveDetail = isSelf
+      ? true
+      : await actorCanReadConfigurationsForCompany(req, existing.companyId);
+    res.json(
+      canReadSensitiveDetail ? await buildAgentDetail(agent) : await buildAgentDetail(agent, { restricted: true }),
+    );
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {

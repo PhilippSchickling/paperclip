@@ -57,7 +57,7 @@ export function TagChips({
       {visible.map((label) => (
         <span
           key={label.id}
-          className="inline-flex max-w-28 items-center truncate rounded-sm px-1.5 py-0.5 text-[11px] leading-none font-medium"
+          className="inline-flex max-w-28 items-center truncate rounded-sm px-1.5 py-0.5 text-(length:--text-micro) leading-none font-medium"
           style={CHIP_COLORS(label)}
           title={label.name}
         >
@@ -87,7 +87,7 @@ export function TagDots({ labels, max = 4 }: { labels: IssueLabel[] | undefined;
         />
       ))}
       {(labels ?? []).length > max && (
-        <span className="text-[10px] text-muted-foreground">+{(labels ?? []).length - max}</span>
+        <span className="text-(length:--text-nano) text-muted-foreground">+{(labels ?? []).length - max}</span>
       )}
     </span>
   );
@@ -298,7 +298,9 @@ export function TagPickerPopover({
           <Button
             size="sm"
             className="h-7 text-xs"
-            disabled={saving}
+            // Disabled while a tag creation is in flight so Save cannot submit
+            // a draft that predates the new label id.
+            disabled={saving || createLabel.isPending}
             onClick={() => {
               onSave(draft);
               setOpen(false);

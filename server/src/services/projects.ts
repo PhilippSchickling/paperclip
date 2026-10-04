@@ -684,16 +684,18 @@ export function projectService(db: Db) {
       }
     }
 
-    await db.delete(projectLabels).where(eq(projectLabels.projectId, projectId));
-    if (deduped.length > 0) {
-      await db.insert(projectLabels).values(
-        deduped.map((labelId) => ({
-          projectId,
-          labelId,
-          companyId,
-        })),
-      );
-    }
+    await db.transaction(async (tx) => {
+      await tx.delete(projectLabels).where(eq(projectLabels.projectId, projectId));
+      if (deduped.length > 0) {
+        await tx.insert(projectLabels).values(
+          deduped.map((labelId) => ({
+            projectId,
+            labelId,
+            companyId,
+          })),
+        );
+      }
+    });
   };
 
   return {

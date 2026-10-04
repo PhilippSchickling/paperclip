@@ -222,6 +222,10 @@ export function projectRoutes(db: Db) {
       const id = req.params.id as string;
       const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
       if (!existing) return;
+      // Same authorization boundary as GET /projects/:id: restricted keys
+      // (task-bridge, skill-test) are denied project APIs by policy and must
+      // not be able to mutate labels either.
+      if (!(await assertProjectReadAllowed(req, res, existing))) return;
       await svc.setProjectLabels(existing.companyId, id, req.body.labelIds);
       const project = await svc.getById(id);
       const actor = getActorInfo(req);
@@ -233,7 +237,7 @@ export function projectRoutes(db: Db) {
         action: "project.labels_updated",
         entityType: "project",
         entityId: id,
-        details: { labelIds: req.body.labelIds.sort() },
+        details: { labelIds: [...req.body.labelIds].sort() },
       });
       res.json(project);
     },

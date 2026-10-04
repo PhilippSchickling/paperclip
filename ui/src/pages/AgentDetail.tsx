@@ -1282,7 +1282,7 @@ export function AgentDetail() {
                 trigger={
                   <button
                     type="button"
-                    className="inline-flex h-5 items-center gap-1 rounded-sm border border-dashed border-border px-1.5 text-[11px] text-muted-foreground hover:bg-accent/50"
+                    className="inline-flex h-5 items-center gap-1 rounded-sm border border-dashed border-border px-1.5 text-(length:--text-micro) text-muted-foreground hover:bg-accent/50"
                     title="Edit tags"
                   >
                     <Tag className="h-3 w-3" />

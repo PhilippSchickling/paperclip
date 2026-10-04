@@ -1,6 +1,6 @@
 import { agentAppearanceSchema, randomAgentAppearance, resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -17,6 +17,8 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
+  labels,
+  agentLabels,
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -399,6 +401,42 @@ export function agentService(db: Db) {
     return db.select().from(agents).where(eq(agents.companyId, companyId));
   }
 
+  async function listLabelsByAgentIds(agentIds: string[]) {
+    const map = new Map<string, typeof labels.$inferSelect[]>();
+    if (agentIds.length === 0) return map;
+    const CHUNK = 500;
+    for (let offset = 0; offset < agentIds.length; offset += CHUNK) {
+      const chunk = agentIds.slice(offset, offset + CHUNK);
+      const rows = await db
+        .select({ agentId: agentLabels.agentId, label: labels })
+        .from(agentLabels)
+        .innerJoin(labels, eq(agentLabels.labelId, labels.id))
+        .where(inArray(agentLabels.agentId, chunk))
+        .orderBy(asc(labels.name), asc(labels.id));
+      for (const row of rows) {
+        let arr = map.get(row.agentId);
+        if (!arr) {
+          arr = [];
+          map.set(row.agentId, arr);
+        }
+        arr.push(row.label);
+      }
+    }
+    return map;
+  }
+
+  async function attachAgentLabels<T extends { id: string }>(rows: T[]): Promise<(T & { labels: typeof labels.$inferSelect[]; labelIds: string[] })[]> {
+    const labelsByAgent = await listLabelsByAgentIds(rows.map((row) => row.id));
+    return rows.map((row) => {
+      const agentLabelsForAgent = labelsByAgent.get(row.id) ?? [];
+      return {
+        ...row,
+        labels: agentLabelsForAgent,
+        labelIds: agentLabelsForAgent.map((label) => label.id),
+      };
+    });
+  }
+
   async function getMonthlySpendByAgentIds(companyId: string, agentIds: string[]) {
     if (agentIds.length === 0) return new Map<string, number>();
     const { start, end } = currentUtcMonthWindow();
@@ -442,7 +480,9 @@ export function agentService(db: Db) {
       listCompanyAgentRows(row.companyId),
       hydrateAgentSpend([row]).then((rows) => rows[0]!),
     ]);
-    return normalizeAgentRow(hydrated, companyRows);
+    const normalized = normalizeAgentRow(hydrated, companyRows);
+    const [withLabels] = await attachAgentLabels([normalized]);
+    return withLabels;
   }
 
   async function requireGetById(id: string) {
@@ -859,18 +899,56 @@ export function agentService(db: Db) {
     return transaction.call(db, async (tx) => applyUpdate(tx as unknown as Db));
   }
 
+  async function setAgentLabels(companyId: string, agentId: string, labelIds: string[]) {
+    const agent = await db
+      .select({ id: agents.id, companyId: agents.companyId })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    if (!agent || agent.companyId !== companyId) throw unprocessable("Agent not found for this company");
+    const unique = [...new Set(labelIds)];
+    if (unique.length > 0) {
+      const valid = await db
+        .select({ id: labels.id })
+        .from(labels)
+        .where(and(eq(labels.companyId, companyId), inArray(labels.id, unique)));
+      if (valid.length !== unique.length) throw unprocessable("One or more labels are invalid for this company");
+    }
+    await db.transaction(async (tx) => {
+      await tx.delete(agentLabels).where(eq(agentLabels.agentId, agentId));
+      if (unique.length > 0) {
+        await tx
+          .insert(agentLabels)
+          .values(unique.map((labelId) => ({ agentId, labelId, companyId })));
+      }
+    });
+  }
+
   return {
-    list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
+    setAgentLabels,
+    list: async (companyId: string, options?: { includeTerminated?: boolean; labelId?: string | null }) => {
       const conditions = [eq(agents.companyId, companyId)];
       if (!options?.includeTerminated) {
         conditions.push(ne(agents.status, "terminated"));
+      }
+      if (options?.labelId) {
+        conditions.push(
+          inArray(
+            agents.id,
+            db
+              .select({ id: agentLabels.agentId })
+              .from(agentLabels)
+              .where(and(eq(agentLabels.companyId, companyId), eq(agentLabels.labelId, options.labelId))),
+          ),
+        );
       }
       const [rows, allCompanyRows] = await Promise.all([
         db.select().from(agents).where(and(...conditions)),
         listCompanyAgentRows(companyId),
       ]);
       const hydrated = await hydrateAgentSpend(rows);
-      return normalizeAgentRows(hydrated, allCompanyRows);
+      const normalized = normalizeAgentRows(hydrated, allCompanyRows);
+      return attachAgentLabels(normalized);
     },
 
     getById,

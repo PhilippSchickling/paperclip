@@ -19,6 +19,8 @@ import {
   heartbeatRuns,
   issueInboxArchives,
   issues,
+  labels,
+  routineLabels,
   pluginManagedResources,
   plugins,
   projects,
@@ -1146,6 +1148,30 @@ export function routineService(
     return map;
   }
 
+  async function listLabelsByRoutineIds(routineIds: string[]) {
+    const map = new Map<string, RoutineListItem["labels"]>();
+    if (routineIds.length === 0) return map;
+    const CHUNK = 500;
+    for (let offset = 0; offset < routineIds.length; offset += CHUNK) {
+      const chunk = routineIds.slice(offset, offset + CHUNK);
+      const rows = await db
+        .select({ routineId: routineLabels.routineId, label: labels })
+        .from(routineLabels)
+        .innerJoin(labels, eq(routineLabels.labelId, labels.id))
+        .where(inArray(routineLabels.routineId, chunk))
+        .orderBy(asc(labels.name), asc(labels.id));
+      for (const row of rows) {
+        let arr = map.get(row.routineId);
+        if (!arr) {
+          arr = [];
+          map.set(row.routineId, arr);
+        }
+        arr.push(row.label);
+      }
+    }
+    return map;
+  }
+
   async function listLiveIssueByRoutineIds(companyId: string, routineIds: string[]) {
     if (routineIds.length === 0) return new Map<string, RoutineListItem["activeIssue"]>();
     const executionBoundRows = await db
@@ -2047,17 +2073,50 @@ export function routineService(
     return run;
   }
 
+  async function setRoutineLabels(companyId: string, routineId: string, labelIds: string[]) {
+    const routine = await getRoutineById(routineId);
+    if (!routine || routine.companyId !== companyId) throw unprocessable("Routine not found for this company");
+    const unique = [...new Set(labelIds)];
+    if (unique.length > 0) {
+      const valid = await db
+        .select({ id: labels.id })
+        .from(labels)
+        .where(and(eq(labels.companyId, companyId), inArray(labels.id, unique)));
+      if (valid.length !== unique.length) throw unprocessable("One or more labels are invalid for this company");
+    }
+    await db.transaction(async (tx) => {
+      await tx.delete(routineLabels).where(eq(routineLabels.routineId, routineId));
+      if (unique.length > 0) {
+        await tx
+          .insert(routineLabels)
+          .values(unique.map((labelId) => ({ routineId, labelId, companyId })));
+      }
+    });
+  }
+
   return {
     evaluateActivityGate,
     get: getRoutineById,
     getTrigger: getTriggerById,
+    setRoutineLabels,
 
     list: async (
       companyId: string,
-      filters?: { projectId?: string | null },
+      filters?: { projectId?: string | null; labelId?: string | null },
     ): Promise<RoutineListItem[]> => {
       const conditions = [eq(routines.companyId, companyId)];
       if (filters?.projectId) conditions.push(eq(routines.projectId, filters.projectId));
+      if (filters?.labelId) {
+        conditions.push(
+          inArray(
+            routines.id,
+            db
+              .select({ id: routineLabels.routineId })
+              .from(routineLabels)
+              .where(and(eq(routineLabels.companyId, companyId), eq(routineLabels.labelId, filters.labelId))),
+          ),
+        );
+      }
 
       const rows = await db
         .select()
@@ -2065,13 +2124,17 @@ export function routineService(
         .where(and(...conditions))
         .orderBy(desc(routines.updatedAt), asc(routines.title));
       const routineIds = rows.map((row) => row.id);
-      const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine, managedByRoutine] = await Promise.all([
-        listTriggersForRoutineIds(companyId, routineIds),
-        listLatestRunByRoutineIds(companyId, routineIds),
-        listLiveIssueByRoutineIds(companyId, routineIds),
-        listManagedRoutineMetadata(routineIds),
-      ]);
-      return rows.map((row) => ({
+      const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine, managedByRoutine, labelsByRoutine] =
+        await Promise.all([
+          listTriggersForRoutineIds(companyId, routineIds),
+          listLatestRunByRoutineIds(companyId, routineIds),
+          listLiveIssueByRoutineIds(companyId, routineIds),
+          listManagedRoutineMetadata(routineIds),
+          listLabelsByRoutineIds(routineIds),
+        ]);
+      return rows.map((row) => {
+        const routineLabelsForRoutine = labelsByRoutine.get(row.id) ?? [];
+        return {
         ...row,
         managedByPlugin: managedByRoutine.get(row.id) ?? null,
         triggers: (triggersByRoutine.get(row.id) ?? []).map((trigger) => ({
@@ -2087,13 +2150,16 @@ export function routineService(
         })),
         lastRun: latestRunByRoutine.get(row.id) ?? null,
         activeIssue: activeIssueByRoutine.get(row.id) ?? null,
-      }));
+        labels: routineLabelsForRoutine,
+        labelIds: routineLabelsForRoutine.map((label) => label.id),
+        };
+      });
     },
 
     getDetail: async (id: string): Promise<RoutineDetail | null> => {
       const row = await getRoutineById(id);
       if (!row) return null;
-      const [project, assignee, parentIssue, descriptionDocument, triggers, recentRuns, activeIssue, managedByRoutine] = await Promise.all([
+      const [project, assignee, parentIssue, descriptionDocument, triggers, recentRuns, activeIssue, managedByRoutine, labelsForRoutine] = await Promise.all([
         row.projectId
           ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null)
           : null,
@@ -2176,6 +2242,7 @@ export function routineService(
           ),
         findLiveExecutionIssue(row),
         listManagedRoutineMetadata([row.id]),
+        listLabelsByRoutineIds([row.id]).then((map) => map.get(row.id) ?? []),
       ]);
 
       return {
@@ -2191,6 +2258,8 @@ export function routineService(
         })) as RoutineTrigger[],
         recentRuns,
         activeIssue,
+        labels: labelsForRoutine,
+        labelIds: labelsForRoutine.map((label) => label.id),
       };
     },
 

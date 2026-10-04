@@ -210,9 +210,34 @@ export function projectRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const includeArchived = req.query.includeArchived === "true";
-    const result = await svc.list(companyId, { includeArchived });
+    const labelId = typeof req.query.labelId === "string" && req.query.labelId.trim() ? req.query.labelId.trim() : null;
+    const result = await svc.list(companyId, { includeArchived, labelId });
     res.json(await filterProjectsForActor(req, result));
   });
+
+  router.put(
+    "/projects/:id/labels",
+    validate(z.object({ labelIds: z.array(z.string().guid()) })),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+      if (!existing) return;
+      await svc.setProjectLabels(existing.companyId, id, req.body.labelIds);
+      const project = await svc.getById(id);
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "project.labels_updated",
+        entityType: "project",
+        entityId: id,
+        details: { labelIds: req.body.labelIds.sort() },
+      });
+      res.json(project);
+    },
+  );
 
   router.get("/projects/:id", async (req, res) => {
     const id = req.params.id as string;

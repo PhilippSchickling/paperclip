@@ -3,6 +3,8 @@ import type { Db } from "@paperclipai/db";
 import {
   projects,
   projectGoals,
+  projectLabels,
+  labels,
   goals,
   issues,
   budgetPolicies,
@@ -68,7 +70,11 @@ interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> 
   managedByPlugin: ProjectManagedByPlugin | null;
   taskCount?: number;
   budget?: ProjectBudgetSummary | null;
+  labels?: LabelRow[];
+  labelIds?: string[];
 }
+
+type LabelRow = typeof labels.$inferSelect;
 
 interface ProjectShortnameRow {
   id: string;
@@ -114,6 +120,41 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
       goalIds: g.map((x) => x.id),
       goals: g,
       executionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(r.executionWorkspacePolicy),
+    } as ProjectWithGoals;
+  });
+}
+
+/** Batch-load labels for a set of projects. */
+async function attachProjectLabels(db: Db, rows: ProjectWithGoals[]): Promise<ProjectWithGoals[]> {
+  if (rows.length === 0) return rows;
+
+  const projectIds = rows.map((r) => r.id);
+  const links = await db
+    .select({
+      projectId: projectLabels.projectId,
+      label: labels,
+    })
+    .from(projectLabels)
+    .innerJoin(labels, eq(projectLabels.labelId, labels.id))
+    .where(inArray(projectLabels.projectId, projectIds))
+    .orderBy(asc(labels.name), asc(labels.id));
+
+  const map = new Map<string, LabelRow[]>();
+  for (const link of links) {
+    let arr = map.get(link.projectId);
+    if (!arr) {
+      arr = [];
+      map.set(link.projectId, arr);
+    }
+    arr.push(link.label);
+  }
+
+  return rows.map((r) => {
+    const l = map.get(r.id) ?? [];
+    return {
+      ...r,
+      labels: l,
+      labelIds: l.map((x) => x.id),
     } as ProjectWithGoals;
   });
 }
@@ -616,24 +657,70 @@ export function projectService(db: Db) {
     const [withGoals] = await attachGoals(db, [row]);
     if (!withGoals) return null;
     const [enriched] = await attachWorkspaces(db, [withGoals]);
-    return enriched ?? null;
+    const [withLabels] = await attachProjectLabels(db, enriched ? [enriched] : []);
+    return withLabels ?? null;
+  };
+
+  const setProjectLabels = async (
+    companyId: string,
+    projectId: string,
+    labelIds: string[],
+  ): Promise<void> => {
+    const project = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!project) throw unprocessable("Project not found for this company");
+
+    const deduped = [...new Set(labelIds)];
+    if (deduped.length > 0) {
+      const existing = await db
+        .select({ id: labels.id })
+        .from(labels)
+        .where(and(eq(labels.companyId, companyId), inArray(labels.id, deduped)));
+      if (existing.length !== deduped.length) {
+        throw unprocessable("One or more labels are invalid for this company");
+      }
+    }
+
+    await db.delete(projectLabels).where(eq(projectLabels.projectId, projectId));
+    if (deduped.length > 0) {
+      await db.insert(projectLabels).values(
+        deduped.map((labelId) => ({
+          projectId,
+          labelId,
+          companyId,
+        })),
+      );
+    }
   };
 
   return {
-    list: async (companyId: string, opts: { includeArchived?: boolean } = {}): Promise<ProjectWithGoals[]> => {
+    list: async (companyId: string, opts: { includeArchived?: boolean; labelId?: string | null } = {}): Promise<ProjectWithGoals[]> => {
       // NOTE: this service default is intentionally the inverse of the HTTP route default.
       // The route (`GET /companies/:companyId/projects`) defaults `includeArchived` to `false`
       // (active-only) for its callers, but the service defaults to `true` so that existing
       // server-internal callers that pass no opts keep their pre-existing "return everything,
       // including archived" behaviour. Pass `{ includeArchived: false }` explicitly for active-only.
       const includeArchived = opts.includeArchived ?? true;
+      const labelFilter = opts.labelId
+        ? inArray(
+            projects.id,
+            db
+              .select({ id: projectLabels.projectId })
+              .from(projectLabels)
+              .where(and(eq(projectLabels.companyId, companyId), eq(projectLabels.labelId, opts.labelId))),
+          )
+        : undefined;
       const where = includeArchived
-        ? eq(projects.companyId, companyId)
-        : and(eq(projects.companyId, companyId), isNull(projects.archivedAt));
+        ? and(eq(projects.companyId, companyId), labelFilter)
+        : and(eq(projects.companyId, companyId), isNull(projects.archivedAt), labelFilter);
       const rows = await db.select().from(projects).where(where);
       const withGoals = await attachGoals(db, rows);
       const withWorkspaces = await attachWorkspaces(db, withGoals);
-      return attachListMetrics(db, companyId, withWorkspaces);
+      const withMetrics = await attachListMetrics(db, companyId, withWorkspaces);
+      return attachProjectLabels(db, withMetrics);
     },
 
     listByIds: async (companyId: string, ids: string[]): Promise<ProjectWithGoals[]> => {
@@ -645,7 +732,8 @@ export function projectService(db: Db) {
         .where(and(eq(projects.companyId, companyId), inArray(projects.id, dedupedIds)));
       const withGoals = await attachGoals(db, rows);
       const withWorkspaces = await attachWorkspaces(db, withGoals);
-      const byId = new Map(withWorkspaces.map((project) => [project.id, project]));
+      const withLabels = await attachProjectLabels(db, withWorkspaces);
+      const byId = new Map(withLabels.map((project) => [project.id, project]));
       return dedupedIds.map((id) => byId.get(id)).filter((project): project is ProjectWithGoals => Boolean(project));
     },
 
@@ -858,6 +946,8 @@ export function projectService(db: Db) {
     },
 
     create: createProject,
+
+    setProjectLabels,
 
     update: async (
       id: string,

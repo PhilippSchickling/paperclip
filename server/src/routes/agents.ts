@@ -18,6 +18,7 @@ import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaper
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
 import { selectDashboardRunIds } from "../services/dashboard-run-selection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
+import { z } from "zod";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -4049,14 +4050,16 @@ export function agentRoutes(
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const unsupportedQueryParams = Object.keys(req.query).sort();
+    const supportedQueryParams = new Set(["labelId"]);
+    const unsupportedQueryParams = Object.keys(req.query).filter((key) => !supportedQueryParams.has(key)).sort();
     if (unsupportedQueryParams.length > 0) {
       res.status(400).json({
         error: `Unsupported query parameter${unsupportedQueryParams.length === 1 ? "" : "s"}: ${unsupportedQueryParams.join(", ")}`,
       });
       return;
     }
-    const result = await filterAgentsForActor(req, await svc.list(companyId));
+    const labelId = typeof req.query.labelId === "string" && req.query.labelId.trim() ? req.query.labelId.trim() : undefined;
+    const result = await filterAgentsForActor(req, await svc.list(companyId, { labelId }));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
       res.json(result.map((agent) => redactAgentRowForResponse(agent)));
@@ -4297,6 +4300,26 @@ export function agentRoutes(
       return;
     }
     res.json(await buildAgentDetail(agent));
+  });
+
+  router.put("/agents/:id/labels", validate(z.object({ labelIds: z.array(z.string().guid()) })), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!existing) return;
+    await svc.setAgentLabels(existing.companyId, id, req.body.labelIds);
+    const agent = await svc.getById(id);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "agent.labels_updated",
+      entityType: "agent",
+      entityId: id,
+      details: { labelIds: [...req.body.labelIds].sort() },
+    });
+    res.json(agent);
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {

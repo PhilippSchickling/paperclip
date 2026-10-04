@@ -1,4 +1,5 @@
 import { Router, type Request } from "express";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
@@ -150,7 +151,8 @@ export function routineRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
-    const result = await svc.list(companyId, { projectId });
+    const labelId = typeof req.query.labelId === "string" && req.query.labelId.trim() ? req.query.labelId.trim() : undefined;
+    const result = await svc.list(companyId, { projectId, labelId });
     res.json(result);
   });
 
@@ -194,6 +196,30 @@ export function routineRoutes(
   router.get("/routines/:id", async (req, res) => {
     const detail = await getAccessibleResource(req, res, svc.getDetail(req.params.id as string), "Routine not found");
     if (!detail) return;
+    res.json(detail);
+  });
+
+  router.put("/routines/:id/labels", validate(z.object({ labelIds: z.array(z.string().guid()) })), async (req, res) => {
+    const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    await svc.setRoutineLabels(routine.companyId, routine.id, req.body.labelIds);
+    const detail = await svc.getDetail(routine.id);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: routine.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "routine.labels_updated",
+      entityType: "routine",
+      entityId: routine.id,
+      details: { labelIds: [...req.body.labelIds].sort() },
+    });
     res.json(detail);
   });
 

@@ -17,6 +17,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.js";
+import { issueService } from "../services/issues.js";
 import { projectService } from "../services/projects.js";
 import { routineService } from "../services/routines.js";
 
@@ -124,6 +125,15 @@ describeEmbeddedPostgres("project/routine/agent labels", () => {
     await svc.setRoutineLabels(companyId, routineId, []);
     const emptied = await svc.list(companyId, { labelId: labelAId });
     expect(emptied).toEqual([]);
+  });
+
+  it("returns 409 when creating a label with a duplicate name", async () => {
+    const svc = issueService(db);
+    await expect(
+      svc.createLabel(companyId, { name: "alpha", color: "#0000ff" }),
+    ).rejects.toMatchObject({ status: 409 });
+    const count = await db.select().from(labels).where(eq(labels.companyId, companyId));
+    expect(count).toHaveLength(2);
   });
 
   it("sets agent labels and filters the agents list by labelId", async () => {

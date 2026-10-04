@@ -105,7 +105,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
-import { isForeignKeyViolation } from "../db-errors.js";
+import { isForeignKeyViolation, isUniqueViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -11952,15 +11952,22 @@ export function issueService(db: Db) {
       companyId: string,
       data: Pick<typeof labels.$inferInsert, "name" | "color">,
     ) => {
-      const [created] = await db
-        .insert(labels)
-        .values({
-          companyId,
-          name: data.name.trim(),
-          color: data.color,
-        })
-        .returning();
-      return created;
+      try {
+        const [created] = await db
+          .insert(labels)
+          .values({
+            companyId,
+            name: data.name.trim(),
+            color: data.color,
+          })
+          .returning();
+        return created;
+      } catch (error) {
+        if (isUniqueViolation(error, "labels_company_name_idx")) {
+          throw conflict(`A label named "${data.name.trim()}" already exists`);
+        }
+        throw error;
+      }
     },
 
     deleteLabel: async (id: string) =>

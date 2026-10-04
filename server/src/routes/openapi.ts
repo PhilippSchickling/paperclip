@@ -3462,6 +3462,18 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "put",
+  path: "/api/agents/{id}/labels",
+  tags: ["agents"],
+  summary: "Replace an agent's labels",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ labelIds: z.array(z.string().guid()) })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/agents/{id}/permissions",
   tags: ["agents"],
@@ -4624,6 +4636,18 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "put",
+  path: "/api/projects/{id}/labels",
+  tags: ["projects"],
+  summary: "Replace a project's labels",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ labelIds: z.array(z.string().guid()) })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/projects/{id}/workspaces",
   tags: ["projects"],
@@ -4712,6 +4736,18 @@ registry.registerPath({
     body: jsonBody(updateRoutineSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/routines/{id}/labels",
+  tags: ["routines"],
+  summary: "Replace a routine's labels",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ labelIds: z.array(z.string().guid()) })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({

@@ -27,6 +27,8 @@ import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent
 import { SummarySlotCard } from "../components/SummarySlotCard";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
+import { TagChips, TagPickerPopover, useCompanyLabels } from "../components/entity-tags";
+import { Tag } from "lucide-react";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
@@ -370,6 +372,7 @@ export function ProjectDetail() {
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
   const membershipsQuery = useResourceMemberships(resolvedCompanyId);
   const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
+  const labelsQuery = useCompanyLabels(resolvedCompanyId);
   const projectMembershipState = project?.id
     ? resourceMembershipState(membershipsQuery.data, "project", project.id)
     : "joined";
@@ -450,6 +453,17 @@ export function ProjectDetail() {
     mutationFn: (data: Record<string, unknown>) =>
       projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId),
     onSuccess: invalidateProject,
+  });
+
+  const setProjectLabelIds = useMutation({
+    mutationFn: (labelIds: string[]) =>
+      projectsApi.setLabelIds(projectLookupRef, labelIds, resolvedCompanyId ?? lookupCompanyId),
+    onSuccess: () => {
+      invalidateProject();
+      if (resolvedCompanyId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      }
+    },
   });
 
   const archiveProject = useMutation({
@@ -778,6 +792,26 @@ export function ProjectDetail() {
               Managed by {project.managedByPlugin.pluginDisplayName}
             </div>
           ) : null}
+          <div className="flex items-center gap-1.5">
+            <TagChips labels={project.labels} max={4} />
+            <TagPickerPopover
+              companyId={resolvedCompanyId}
+              labels={labelsQuery.data}
+              selectedIds={project.labelIds ?? []}
+              saving={setProjectLabelIds.isPending}
+              onSave={(labelIds) => setProjectLabelIds.mutate(labelIds)}
+              trigger={
+                <button
+                  type="button"
+                  className="inline-flex h-5 items-center gap-1 rounded-sm border border-dashed border-border px-1.5 text-[11px] text-muted-foreground hover:bg-accent/50"
+                  title="Edit tags"
+                >
+                  <Tag className="h-3 w-3" />
+                  Tags
+                </button>
+              }
+            />
+          </div>
         </div>
         <div className="ml-auto flex items-center gap-2">
           <StarToggle

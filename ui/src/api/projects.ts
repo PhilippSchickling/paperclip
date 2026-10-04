@@ -21,12 +21,15 @@ function projectPath(id: string, companyId?: string, suffix = "") {
 export const projectsApi = {
   repositoryOptions: (companyId: string) => api.get<ProjectRepositoryOptions>(`/companies/${companyId}/project-repositories`),
   setRepositories: (id: string, repositoryIds: string[]) => api.put<Project>(projectPath(id, undefined, "/repositories"), { repositoryIds }),
-  list: (companyId: string, opts: { includeArchived?: boolean } = {}) => {
+  list: (companyId: string, opts: { includeArchived?: boolean; labelId?: string | null } = {}) => {
     const params = new URLSearchParams();
     if (opts.includeArchived) params.set("includeArchived", "true");
+    if (opts.labelId) params.set("labelId", opts.labelId);
     const query = params.toString();
     return api.get<Project[]>("/companies/" + encodeURIComponent(companyId) + "/projects" + (query ? "?" + query : ""));
   },
+  setLabelIds: (id: string, labelIds: string[], companyId?: string) =>
+    api.put<Project>(projectPath(id, companyId, "/labels"), { labelIds }),
   get: (id: string, companyId?: string) => api.get<Project>(projectPath(id, companyId)),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Project>(`/companies/${companyId}/projects`, data),

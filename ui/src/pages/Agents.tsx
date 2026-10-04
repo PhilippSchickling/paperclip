@@ -22,6 +22,7 @@ import { EntityRow } from "../components/EntityRow";
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { TagChips, TagFilterPopover, useCompanyLabels } from "../components/entity-tags";
 import { OrgChart } from "./OrgChart";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
@@ -239,6 +240,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   }, [builtInAgents, builtInAgentsEnabled]);
   const builtInAgentIds = useMemo(() => new Set(builtInByAgentId.keys()), [builtInByAgentId]);
   const [configureState, setConfigureState] = useState<BuiltInAgentState | null>(null);
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const labelsQuery = useCompanyLabels(selectedCompanyId);
 
   const { data: agents, isLoading, error } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -340,7 +343,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     return <PageSkeleton variant="list" />;
   }
 
-  const filtered = filterAgents(agents ?? [], tab, builtInAgentIds);
+  const filtered = filterAgents(agents ?? [], tab, builtInAgentIds)
+    .filter((agent) => (tagFilter ? (agent.labelIds ?? []).includes(tagFilter) : true));
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds);
   const environmentDataLoading = environmentsEnabled && environments === undefined;
   const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
@@ -427,6 +431,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         metaSpacerClassName="hidden @5xl:block"
         trailing={
           <div className="flex items-center gap-3">
+            <TagChips labels={agent.labels} max={2} className="hidden xl:inline-flex" />
             {agentChat.enabled && <Button variant="ghost" size="sm" onClick={event => { event.preventDefault(); event.stopPropagation(); navigate(`/chats/${agentRouteRef(agent)}`); }}>Chat</Button>}
             <div className="hidden sm:flex items-center gap-3">
               {liveRunByAgent.has(agent.id) && (
@@ -492,6 +497,9 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           />
         </Tabs>
         <div className="flex items-center gap-2">
+          {effectiveView === "list" ? (
+            <TagFilterPopover labels={labelsQuery.data} value={tagFilter} onChange={setTagFilter} />
+          ) : null}
           {!forceListView ? <div className="flex items-center overflow-hidden rounded-md border border-border" role="group" aria-label="Agent view">
               <Button
                 type="button"

@@ -47,6 +47,8 @@ import { IssueRow } from "../components/IssueRow";
 import { StatusGlyph } from "../components/StatusGlyph";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
+import { TagChips, TagPickerPopover, useCompanyLabels } from "../components/entity-tags";
+import { Tag } from "lucide-react";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentActionButtons } from "../components/AgentActionButtons";
@@ -932,6 +934,22 @@ export function AgentDetail() {
     enabled: !!resolvedCompanyId && needsOverviewData,
   });
 
+  const labelsQuery = useCompanyLabels(resolvedCompanyId);
+  const setAgentLabelIds = useMutation({
+    mutationFn: (labelIds: string[]) =>
+      agentsApi.setLabelIds(agentLookupRef, labelIds, resolvedCompanyId ?? lookupCompanyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      }
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to update tags");
+    },
+  });
+
   const { data: skillSnapshot } = useQuery({
     queryKey: queryKeys.agents.skills(resolvedAgentId ?? "__none__"),
     queryFn: () => agentsApi.skills(resolvedAgentId!, resolvedCompanyId ?? undefined),
@@ -1252,6 +1270,26 @@ export function AgentDetail() {
                 : null}
               <span>{getAdapterDisplay(agent.adapterType).label}</span><span>·</span>
               <span>{agent.title || roleLabels[agent.role] || agent.role}</span>
+            </div>
+            <div className="flex items-center gap-1.5 pt-1">
+              <TagChips labels={agent.labels} max={4} />
+              <TagPickerPopover
+                companyId={resolvedCompanyId}
+                labels={labelsQuery.data}
+                selectedIds={agent.labelIds ?? []}
+                saving={setAgentLabelIds.isPending}
+                onSave={(labelIds) => setAgentLabelIds.mutate(labelIds)}
+                trigger={
+                  <button
+                    type="button"
+                    className="inline-flex h-5 items-center gap-1 rounded-sm border border-dashed border-border px-1.5 text-[11px] text-muted-foreground hover:bg-accent/50"
+                    title="Edit tags"
+                  >
+                    <Tag className="h-3 w-3" />
+                    Tags
+                  </button>
+                }
+              />
             </div>
           </div>
         </div>

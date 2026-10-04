@@ -35,15 +35,18 @@ export interface RestoreRoutineRevisionResponse {
 }
 
 export const routinesApi = {
-  list: (companyId: string, filters?: { projectId?: string | null }) => {
+  list: (companyId: string, filters?: { projectId?: string | null; labelId?: string | null }) => {
     const params = new URLSearchParams();
     if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.labelId) params.set("labelId", filters.labelId);
     const query = params.toString();
     return api.get<RoutineListItem[]>(`/companies/${companyId}/routines${query ? `?${query}` : ""}`);
   },
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Routine>(`/companies/${companyId}/routines`, data),
   get: (id: string) => api.get<RoutineDetail>(`/routines/${id}`),
+  setLabelIds: (id: string, labelIds: string[]) =>
+    api.put<RoutineDetail>(`/routines/${id}/labels`, { labelIds }),
   update: (id: string, data: Record<string, unknown>) => api.patch<Routine>(`/routines/${id}`, data),
   listRevisions: (id: string) => api.get<RoutineRevision[]>(`/routines/${id}/revisions`),
   restoreRevision: (

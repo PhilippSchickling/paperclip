@@ -7,6 +7,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EntityRow } from "../components/EntityRow";
+import { TagChips, TagFilterPopover, useCompanyLabels } from "../components/entity-tags";
 import { ProjectTile } from "../components/ProjectTile";
 import { StatusBadge } from "../components/StatusBadge";
 import { MembershipAction } from "../components/MembershipAction";
@@ -82,6 +83,7 @@ export function Projects() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [sortField, setSortField] = useState<ProjectSortField>("name");
   const [sortDir, setSortDir] = useState<ProjectSortDir>("asc");
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Projects" }]);
@@ -94,10 +96,12 @@ export function Projects() {
   });
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
-  const projects = useMemo(
-    () => allProjects ?? [],
-    [allProjects],
-  );
+  const labelsQuery = useCompanyLabels(selectedCompanyId);
+  const projects = useMemo(() => {
+    const all = allProjects ?? [];
+    if (!tagFilter) return all;
+    return all.filter((project) => (project.labelIds ?? []).includes(tagFilter));
+  }, [allProjects, tagFilter]);
   const sortedProjects = useMemo(
     () => sortProjects(projects, sortField, sortDir),
     [projects, sortDir, sortField],
@@ -129,6 +133,7 @@ export function Projects() {
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-1">
         <Popover>
           <PopoverTrigger asChild>
             <Button variant="ghost" size="sm" className="w-fit text-xs" title="Sort">
@@ -168,6 +173,8 @@ export function Projects() {
             </div>
           </PopoverContent>
         </Popover>
+        <TagFilterPopover labels={labelsQuery.data} value={tagFilter} onChange={setTagFilter} />
+        </div>
         <Button size="sm" variant="outline" onClick={openNewProject}>
           <Plus className="h-4 w-4 mr-1" />
           Add Project
@@ -221,6 +228,7 @@ export function Projects() {
                         className={state === "left" ? "group text-foreground/55" : "group"}
                         trailing={
                           <div className="flex items-center gap-3">
+                            <TagChips labels={project.labels} max={2} className="hidden lg:inline-flex" />
                             <span
                               className="hidden text-xs text-muted-foreground tabular-nums sm:inline"
                               title={`${formatNumber(project.taskCount ?? 0)} task${(project.taskCount ?? 0) === 1 ? "" : "s"}`}

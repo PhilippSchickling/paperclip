@@ -1,8 +1,9 @@
-import type { AgentAppearance } from "@paperclipai/shared";
+import type { AgentAppearance, IssueLabel } from "@paperclipai/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import type { ReactNode } from "react";
 import { MoreHorizontal, Play } from "lucide-react";
 import { Link } from "@/lib/router";
+import { TagChips } from "./entity-tags";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -35,6 +36,7 @@ export type RoutineListRowItem = {
     triggeredAt?: Date | string | null;
     status?: string | null;
   } | null;
+  labels?: IssueLabel[];
 };
 
 export function formatLastRunTimestamp(value: Date | string | null | undefined) {
@@ -140,6 +142,9 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
           ) : null}
           {managedByLabel ? (
             <span className="text-xs text-muted-foreground">{managedByLabel}</span>
+          ) : null}
+          {routine.labels && routine.labels.length > 0 ? (
+            <TagChips labels={routine.labels} max={2} />
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">

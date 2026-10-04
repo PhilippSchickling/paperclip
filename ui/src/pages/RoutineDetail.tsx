@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, History, Pencil, Repeat, Sparkles, X } from "lucide-react";
+import { AlertCircle, History, Pencil, Repeat, Sparkles, Tag, X } from "lucide-react";
+import { TagChips, TagPickerPopover, useCompanyLabels } from "../components/entity-tags";
 import { ApiError } from "../api/client";
 import {
   routinesApi,
@@ -180,6 +181,17 @@ export function RoutineDetail() {
     enabled: !!routineId,
   });
   const activeIssueId = routine?.activeIssue?.id;
+
+  const labelsQuery = useCompanyLabels(selectedCompanyId);
+  const setRoutineLabelIds = useMutation({
+    mutationFn: (labelIds: string[]) => routinesApi.setLabelIds(routineId!, labelIds),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) });
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId) });
+      }
+    },
+  });
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(activeIssueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(activeIssueId!),
@@ -830,6 +842,26 @@ export function RoutineDetail() {
                 <span className="font-mono text-(length:--text-nano)">{routine.managedByPlugin.resourceKey}</span>
               </Badge>
             ) : null}
+            <div className="flex shrink-0 items-center gap-1.5">
+              <TagChips labels={routine.labels} max={3} />
+              <TagPickerPopover
+                companyId={selectedCompanyId}
+                labels={labelsQuery.data}
+                selectedIds={routine.labelIds ?? []}
+                saving={setRoutineLabelIds.isPending}
+                onSave={(labelIds) => setRoutineLabelIds.mutate(labelIds)}
+                trigger={
+                  <button
+                    type="button"
+                    className="inline-flex h-5 items-center gap-1 rounded-sm border border-dashed border-border px-1.5 text-[11px] text-muted-foreground hover:bg-accent/50"
+                    title="Edit tags"
+                  >
+                    <Tag className="h-3 w-3" />
+                    Tags
+                  </button>
+                }
+              />
+            </div>
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-2">
             {section === "history" ? (

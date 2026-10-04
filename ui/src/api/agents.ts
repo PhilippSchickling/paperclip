@@ -112,7 +112,14 @@ export const agentsApi = {
   adoptAiConnection: (agentId: string, interactionId: string, connectionId: string, companyId: string) =>
     api.post<ConnectionIntentInteraction>(withCompanyScope(`/agents/${agentId}/connection-intents/${interactionId}/adopt`, companyId), { connectionId }),
 
-  list: (companyId: string) => api.get<Agent[]>(`/companies/${companyId}/agents`),
+  list: (companyId: string, opts: { labelId?: string | null } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.labelId) params.set("labelId", opts.labelId);
+    const query = params.toString();
+    return api.get<Agent[]>(`/companies/${companyId}/agents${query ? `?${query}` : ""}`);
+  },
+  setLabelIds: (id: string, labelIds: string[], companyId?: string) =>
+    api.put<Agent>(agentPath(id, companyId, "/labels"), { labelIds }),
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
     api.get<Record<string, unknown>[]>(`/companies/${companyId}/agent-configurations`),

@@ -33,6 +33,7 @@ import {
   type RoutineRunDialogSubmitData,
 } from "../components/RoutineRunVariablesDialog";
 import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/RoutineVariablesEditor";
+import { TagFilterPopover, useCompanyLabels } from "../components/entity-tags";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -363,6 +364,8 @@ export function Routines() {
     : "paperclip:routines-view";
   const [routineViewState, setRoutineViewState] = useState<RoutineViewState>(() => getRoutineViewState(routineViewStateKey));
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const labelsQuery = useCompanyLabels(selectedCompanyId);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Routines" }]);
@@ -643,8 +646,11 @@ export function Routines() {
     [routineFolders],
   );
   const visibleRoutines = useMemo(
-    () => (routines ?? []).filter((routine) => routine.status !== "archived"),
-    [routines],
+    () =>
+      (routines ?? [])
+        .filter((routine) => routine.status !== "archived")
+        .filter((routine) => (tagFilter ? (routine.labelIds ?? []).includes(tagFilter) : true)),
+    [routines, tagFilter],
   );
   const liveIssueIds = useMemo(
     () => collectLiveIssueIds(liveRuns, routineExecutionIssues),
@@ -883,6 +889,7 @@ export function Routines() {
             {visibleRoutines.length} routine{visibleRoutines.length === 1 ? "" : "s"}
           </p>
           <div className="flex items-center gap-1">
+              <TagFilterPopover labels={labelsQuery.data} value={tagFilter} onChange={setTagFilter} />
               <Popover>
                 <PopoverTrigger asChild>
                   <Button variant="ghost" size="sm" className="text-xs" title="Sort">

@@ -30,6 +30,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { logger } from "../middleware/logger.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -731,6 +732,74 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .update(heartbeatRuns)
       .set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, activeRunId));
+  });
+
+  it("caps issue_blockers_resolved wakeups at ten per issue, agent, and hour", async () => {
+    const warnSpy = vi.spyOn(logger, "warn");
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "WakeCapRunner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Wake cap target",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agentWakeupRequests).values(Array.from({ length: 10 }, (_, attempt) => ({
+      companyId,
+      agentId,
+      source: "automation" as const,
+      triggerDetail: "system" as const,
+      reason: "issue_blockers_resolved",
+      payload: { issueId },
+      requestedByActorType: "system" as const,
+      requestedByActorId: "test",
+      idempotencyKey: `blocker-wake-cap:${attempt}`,
+    })));
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId },
+      idempotencyKey: "blocker-wake-cap:11",
+      contextSnapshot: { issueId, wakeReason: "issue_blockers_resolved" },
+    });
+    expect(wake).toBeNull();
+
+    const wakeRequests = await db.select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+      ));
+    expect(wakeRequests).toHaveLength(10);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId, issueId, limit: 10 }),
+      "skipping issue blocker resolved wake after hourly limit",
+    );
+    warnSpy.mockRestore();
   });
 
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {

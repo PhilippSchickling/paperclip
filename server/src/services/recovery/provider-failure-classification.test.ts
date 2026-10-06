@@ -67,6 +67,14 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("classifies an OpenRouter key-limit rejection as provider quota", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "OpenRouter returned 403: Key limit exceeded",
+      resultJson: null,
+    })).toMatchObject({ kind: "provider_quota", parsedResetTime: false });
+  });
+
   it("treats timezone-less provider reset clocks as UTC", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     const classification = classifyAdapterFailureForRecovery({

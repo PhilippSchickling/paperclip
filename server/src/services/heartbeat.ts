@@ -794,6 +794,9 @@ function isTransientWorkspaceGitScanCode(code: string | null | undefined): boole
 }
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const INSTANT_FAILURE_RETRY_MAX_ATTEMPTS = 1;
+const INSTANT_FAILURE_RETRY_WINDOW_MS = 5_000;
+const ISSUE_BLOCKER_WAKE_HOURLY_LIMIT = 10;
 export {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
@@ -15193,12 +15196,17 @@ export function heartbeatService(
       opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    const maxAttempts = Math.max(
+    const requestedMaxAttempts = Math.max(
       0,
       Math.floor(
         opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
       ),
     );
+    const instantFailure = retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON &&
+      await isInstantFailureWithoutToolCalls(run);
+    const maxAttempts = instantFailure
+      ? Math.min(requestedMaxAttempts, INSTANT_FAILURE_RETRY_MAX_ATTEMPTS)
+      : requestedMaxAttempts;
     const nextAttempt =
       (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
       retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
@@ -15232,6 +15240,17 @@ export function heartbeatService(
       retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
         ? readTransientRecoveryContractFromRun(run)
         : null;
+    if (transientRecovery?.errorFamily === "provider_quota") {
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Automatic retry suppressed because the provider quota is exhausted",
+        payload: { retryReason, errorFamily: transientRecovery.errorFamily },
+      });
+      return { outcome: "not_scheduled" as const, reason: "provider_quota", errorCode: "provider_quota" as const,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
     const codexTransientFallbackMode =
       agent.adapterType === "codex_local" &&
       transientRecovery?.errorFamily === "transient_upstream"
@@ -15363,7 +15382,17 @@ export function heartbeatService(
       }
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
-    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const failedRunResult = parseObject(run.resultJson);
+    const maxTurnSessionId = readNonEmptyString(run.sessionIdAfter) ??
+      readNonEmptyString(failedRunResult.sessionId) ??
+      readNonEmptyString(failedRunResult.session_id);
+    const resumeFromRunId = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
+      agent.adapterType === "claude_local" && maxTurnSessionId
+      ? run.id
+      : null;
+    const sessionBefore = resumeFromRunId
+      ? maxTurnSessionId
+      : await resolveSessionBeforeForWakeup(agent, taskKey);
     const interactionContinuationPayload =
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
         ? {
@@ -15392,6 +15421,7 @@ export function heartbeatService(
       {
         ...contextSnapshot,
         retryOfRunId: run.id,
+        ...(resumeFromRunId ? { resumeFromRunId } : {}),
         wakeReason,
         retryReason,
         ...(retryReason === WORKSPACE_BUSY_RETRY_REASON
@@ -15754,6 +15784,7 @@ export function heartbeatService(
               {
                 ...(issueId ? { issueId } : {}),
                 retryOfRunId: run.id,
+                ...(resumeFromRunId ? { resumeFromRunId } : {}),
                 ...interactionContinuationPayload,
                 retryReason,
                 ...(transientRecovery
@@ -16054,6 +16085,26 @@ export function heartbeatService(
       attempt: schedule.attempt,
       maxAttempts: schedule.maxAttempts,
     };
+  }
+
+  async function isInstantFailureWithoutToolCalls(
+    run: typeof heartbeatRuns.$inferSelect,
+  ) {
+    if (!run.startedAt || !run.finishedAt) return false;
+    const durationMs = run.finishedAt.getTime() - run.startedAt.getTime();
+    if (durationMs < 0 || durationMs > INSTANT_FAILURE_RETRY_WINDOW_MS) return false;
+    const events = await db
+      .select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(and(
+        eq(heartbeatRunEvents.companyId, run.companyId),
+        eq(heartbeatRunEvents.runId, run.id),
+      ));
+    return !events.some(({ eventType, payload }) => {
+      const normalizedType = eventType.toLowerCase();
+      const nestedType = readNonEmptyString(parseObject(parseObject(payload).prpEvent).type) ?? "";
+      return normalizedType.includes("tool") || nestedType.toLowerCase().includes("tool");
+    });
   }
 
   // Finds a running heartbeat run (other than the caller's) whose context
@@ -26113,6 +26164,30 @@ export function heartbeatService(
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    if (reason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON && issueId) {
+      const since = new Date(Date.now() - 60 * 60 * 1000);
+      const recentBlockerWakes = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, agent.companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, ISSUE_BLOCKERS_RESOLVED_WAKE_REASON),
+          gte(agentWakeupRequests.requestedAt, since),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ))
+        .limit(ISSUE_BLOCKER_WAKE_HOURLY_LIMIT);
+      if (recentBlockerWakes.length >= ISSUE_BLOCKER_WAKE_HOURLY_LIMIT) {
+        logger.warn({
+          companyId: agent.companyId,
+          agentId,
+          issueId,
+          reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+          limit: ISSUE_BLOCKER_WAKE_HOURLY_LIMIT,
+        }, "skipping issue blocker resolved wake after hourly limit");
+        return null;
+      }
+    }
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (isConversation(conversation)) {

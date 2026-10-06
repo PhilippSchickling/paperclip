@@ -782,6 +782,36 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
   });
 
+  it("routes a quota failure to the board without creating a wait-recovery retry", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "OpenRouter returned 403: Key limit exceeded",
+        errorCode: "provider_quota",
+        resultJson: { errorFamily: "provider_quota" },
+        contextSnapshot: { issueId: sourceIssue.id },
+      },
+      recoveryCause: "provider_quota",
+    });
+
+    const [action] = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(action).toMatchObject({
+      ownerType: "board",
+      wakePolicy: { type: "board_escalation", reason: "provider_quota", preservesSourceAssignee: true },
+      monitorPolicy: null,
+    });
+    expect(action?.nextAction).toContain("explicitly retry the original assignee");
+    expect(await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.scheduledRetryReason, "provider_quota_recovery"))).toHaveLength(0);
+  });
+
   it("does not schedule another retry after a prior quota monitor fired", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.update(issues).set({ monitorAttemptCount: 1 }).where(eq(issues.id, sourceIssueId));

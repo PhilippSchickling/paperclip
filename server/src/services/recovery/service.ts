@@ -2443,7 +2443,6 @@ export function recoveryService(
       issue: input.issue,
       latestRun: input.latestRun,
     });
-    const isProviderQuotaWait = recoveryCause === "provider_quota";
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
@@ -2455,7 +2454,7 @@ export function recoveryService(
       supersedeOnIdentityChange: recoveryCause === "configuration_incomplete",
       preserveExistingOwner: true,
       kind: strandedRecoveryActionKind(recoveryCause),
-      ownerType: isProviderQuotaWait ? "system" : "board",
+      ownerType: "board",
       ownerAgentId: null,
       ownerUserId: null,
       previousOwnerAgentId: input.issue.assigneeAgentId,
@@ -2477,16 +2476,14 @@ export function recoveryService(
         failureSummary:
           summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
       },
-      evidenceOnCreate: isProviderQuotaWait
-        ? {}
-        : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY },
+      evidenceOnCreate: { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY },
       nextAction:
         recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "Board operator: inspect the run evidence, then explicitly choose a valid issue disposition, retry the original owner, reassign, or intentionally resolve the task."
           : recoveryCause === "process_lost"
             ? "Board operator: inspect the retry history, then explicitly retry the original owner, reassign, or intentionally resolve the task."
             : recoveryCause === "provider_quota"
-              ? "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
+              ? "Board operator: wait for provider quota recovery, then explicitly retry the original assignee or choose another disposition."
               : recoveryCause === "codex_output_inactivity_monitor"
                 ? "Board operator: inspect the inactivity evidence, then explicitly retry the original owner, reassign, or intentionally resolve the task."
                 : recoveryCause === "workspace_validation_failed"
@@ -2513,19 +2510,12 @@ export function recoveryService(
                     : recoveryCause === "execution_review_participant_recovery"
                       ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
                       : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
-      wakePolicy: isProviderQuotaWait
-        ? {
-            type: "monitor_only",
-            reason: recoveryCause,
-          }
-        : {
-            type: "board_escalation",
-            reason: recoveryCause,
-            preservesSourceAssignee: true,
-          },
-      monitorPolicy: isProviderQuotaWait
-        ? { type: "wait_recovery", retryAgentId: routing.returnOwnerAgentId }
-        : null,
+      wakePolicy: {
+        type: "board_escalation",
+        reason: recoveryCause,
+        preservesSourceAssignee: true,
+      },
+      monitorPolicy: null,
       maxAttempts: null,
       lastAttemptAt: now,
     });

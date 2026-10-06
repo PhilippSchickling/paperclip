@@ -796,6 +796,7 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 const INSTANT_FAILURE_RETRY_MAX_ATTEMPTS = 1;
 const INSTANT_FAILURE_RETRY_WINDOW_MS = 5_000;
+const ISSUE_BLOCKER_WAKE_HOURLY_LIMIT = 10;
 export {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
@@ -26163,6 +26164,30 @@ export function heartbeatService(
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    if (reason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON && issueId) {
+      const since = new Date(Date.now() - 60 * 60 * 1000);
+      const recentBlockerWakes = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, agent.companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, ISSUE_BLOCKERS_RESOLVED_WAKE_REASON),
+          gte(agentWakeupRequests.requestedAt, since),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ))
+        .limit(ISSUE_BLOCKER_WAKE_HOURLY_LIMIT);
+      if (recentBlockerWakes.length >= ISSUE_BLOCKER_WAKE_HOURLY_LIMIT) {
+        logger.warn({
+          companyId: agent.companyId,
+          agentId,
+          issueId,
+          reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+          limit: ISSUE_BLOCKER_WAKE_HOURLY_LIMIT,
+        }, "skipping issue blocker resolved wake after hourly limit");
+        return null;
+      }
+    }
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (isConversation(conversation)) {

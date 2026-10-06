@@ -515,6 +515,43 @@ describe("issue dependency wakeups in issue routes", () => {
     expect(mockIssueService.listWakeableBlockedDependents).not.toHaveBeenCalled();
   });
 
+  it("wakes once when the same blocker is resolved five times", async () => {
+    const blockerIssueId = "11111111-1111-4111-8111-111111111111";
+    const dependentIssueId = "22222222-2222-4222-8222-222222222222";
+    mockIssueService.getById
+      .mockResolvedValueOnce(issueRecord({
+        id: blockerIssueId,
+        identifier: "PAP-REVIEW",
+        title: "Review",
+        status: "in_progress",
+      }))
+      .mockResolvedValue(issueRecord({
+        id: blockerIssueId,
+        identifier: "PAP-REVIEW",
+        title: "Review",
+        status: "done",
+      }));
+    mockIssueService.update.mockResolvedValue(issueRecord({
+      id: blockerIssueId,
+      identifier: "PAP-REVIEW",
+      title: "Review",
+      status: "done",
+    }));
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([{
+      id: dependentIssueId,
+      assigneeAgentId: "agent-release",
+      blockerIssueIds: [blockerIssueId],
+      blockedTransitionAt: new Date("2026-08-01T15:00:00.000Z"),
+    }]);
+    const app = await createApp();
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const res = await request(app).patch(`/api/issues/${blockerIssueId}`).send({ status: "done" });
+      expect(res.status).toBe(200);
+    }
+    await vi.waitFor(() => expect(mockWakeup).toHaveBeenCalledTimes(1));
+  });
+
   it("wakes a QA-like chain one dependent at a time after each blocker completes", async () => {
     const reviewIssueId = "11111111-1111-4111-8111-111111111111";
     const releaseIssueId = "22222222-2222-4222-8222-222222222222";

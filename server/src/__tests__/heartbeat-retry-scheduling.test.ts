@@ -415,7 +415,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       error: "Maximum turns reached",
       errorCode: "adapter_failed",
       sessionIdAfter: input?.sessionId ?? null,
-      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       finishedAt: now,
       scheduledRetryAttempt: input?.scheduledRetryAttempt ?? 0,
       scheduledRetryReason: input?.scheduledRetryAttempt ? MAX_TURN_CONTINUATION_RETRY_REASON : null,
